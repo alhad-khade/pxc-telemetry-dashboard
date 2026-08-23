@@ -16,7 +16,7 @@ def load_s3_data():
         aws_secret_access_key=st.secrets["AWS_SECRET_ACCESS_KEY"],
         region_name=st.secrets["AWS_DEFAULT_REGION"]
     )
-    bucket_name = st.secrets["pxc-telemetry-poc-adk"]
+    bucket_name = st.secrets["S3_BUCKET_NAME"]
     key = 'gold/sfp_anomaly_output.csv'
     
     obj = s3.get_object(Bucket=bucket_name, Key=key)

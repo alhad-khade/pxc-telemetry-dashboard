@@ -55,7 +55,7 @@ try:
         return 'background-color: #0e1117; color: #00ff7f;'
 
     display_cols = ['interface', 'health_status', 'laser_bias_ma', 'pre_fec_ber', 'temperature_c', 'anomaly_score', 'timestamp']
-    styled_table = latest_df[display_cols].style.applymap(style_status, subset=['health_status'])
+    styled_table = latest_df[display_cols].style.map(style_status, subset=['health_status'])
     st.dataframe(styled_table, use_container_width=True)
 
     st.markdown("---")

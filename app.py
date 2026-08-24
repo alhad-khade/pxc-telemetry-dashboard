@@ -35,7 +35,7 @@ try:
     }
     df['severity'] = df['health_status'].map(status_severity)
 
-    # Calculate worst state, anomaly score, degradation times, and lead time
+    # Calculate worst state, anomaly score, degradation times, and lead time (in days)
     summary_records = []
     for (device_id, iface), group in df.groupby(['device_id', 'interface']):
         group = group.sort_values('timestamp')
@@ -44,7 +44,7 @@ try:
         max_bias = group['laser_bias_ma'].max()
         max_ber = group['pre_fec_ber'].max()
         
-        # Calculate early detection timestamps & lead time
+        # Calculate early detection timestamps & lead time in days
         if max_sev > 1:
             # Timestamp when early warning was first flagged
             first_warning_row = group[group['severity'] >= 2]
@@ -55,16 +55,18 @@ try:
             if not critical_row.empty:
                 degraded_at = critical_row['timestamp'].min()
                 lead_time_td = degraded_at - first_detected_at
-                lead_time_hrs = f"{round(lead_time_td.total_seconds() / 3600, 1)} hrs"
+                days_val = round(lead_time_td.total_seconds() / 86400, 1)
+                advance_notice = f"{days_val} days"
             else:
                 degraded_at = first_detected_at
                 latest_ts = group['timestamp'].max()
                 lead_time_td = latest_ts - first_detected_at
-                lead_time_hrs = f">{round(lead_time_td.total_seconds() / 3600, 1)} hrs"
+                days_val = round(lead_time_td.total_seconds() / 86400, 1)
+                advance_notice = f">{days_val} days"
         else:
             first_detected_at = pd.NaT
             degraded_at = group['timestamp'].max()
-            lead_time_hrs = "N/A (Healthy)"
+            advance_notice = "N/A (Healthy)"
 
         summary_records.append({
             'device_id': device_id,
@@ -75,7 +77,7 @@ try:
             'min_anomaly_score': min_score,
             'first_detected_at': first_detected_at,
             'degraded_at': degraded_at,
-            'advance_notice_hrs': lead_time_hrs
+            'advance_notice_days': advance_notice
         })
 
     summary_df = pd.DataFrame(summary_records)
@@ -114,12 +116,12 @@ try:
             return 'background-color: #ffa500; color: black; font-weight: bold;'
         return 'background-color: #0e1117; color: #00ff7f;'
 
-    # Leading device_id + early detection lead time metrics
+    # Display columns with lead time in days
     display_cols = [
         'device_id', 
         'interface', 
         'health_status', 
-        'advance_notice_hrs',
+        'advance_notice_days',
         'first_detected_at',
         'max_laser_bias', 
         'max_ber', 

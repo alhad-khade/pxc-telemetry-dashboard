@@ -35,15 +35,32 @@ try:
     }
     df['severity'] = df['health_status'].map(status_severity)
 
-    # Group by interface to capture worst observed state & min anomaly score
-    summary_df = df.groupby('interface').agg(
-        max_severity=('severity', 'max'),
-        min_anomaly_score=('anomaly_score', 'min'),
-        max_laser_bias=('laser_bias_ma', 'max'),
-        max_ber=('pre_fec_ber', 'max'),
-        last_timestamp=('timestamp', 'max')
-    ).reset_index()
+    # Calculate worst state, minimum anomaly score, and exact degradation time
+    summary_records = []
+    for (device_id, iface), group in df.groupby(['device_id', 'interface']):
+        max_sev = group['severity'].max()
+        min_score = group['anomaly_score'].min()
+        max_bias = group['laser_bias_ma'].max()
+        max_ber = group['pre_fec_ber'].max()
+        
+        # Capture the timestamp when the peak degraded health status was first observed
+        if max_sev > 1:
+            degraded_rows = group[group['severity'] == max_sev]
+            degraded_at = degraded_rows['timestamp'].min()
+        else:
+            degraded_at = group['timestamp'].max()
+            
+        summary_records.append({
+            'device_id': device_id,
+            'interface': iface,
+            'max_severity': max_sev,
+            'max_laser_bias': max_bias,
+            'max_ber': max_ber,
+            'min_anomaly_score': min_score,
+            'degraded_at': degraded_at
+        })
 
+    summary_df = pd.DataFrame(summary_records)
     severity_map = {3: 'CRITICAL_DEGRADATION', 2: 'WARNING_DEGRADATION', 1: 'HEALTHY'}
     summary_df['health_status'] = summary_df['max_severity'].map(severity_map)
 
@@ -53,8 +70,8 @@ try:
     critical_count = len(summary_df[summary_df['health_status'] == 'CRITICAL_DEGRADATION'])
     healthy_count = total_interfaces - (warning_count + critical_count)
     
-    # Financial KPI: £15,000 SLA penalty avoided per flagged optic failure
-    penalties_saved = (warning_count + critical_count) * 15000
+    # Financial KPI: £15,000 SLA penalty avoided per critical optic outage
+    penalties_saved = critical_count * 15000
 
     # Render Executive KPI Metrics (5 Columns)
     col1, col2, col3, col4, col5 = st.columns(5)
@@ -62,7 +79,7 @@ try:
     col2.metric("Healthy Interfaces", healthy_count)
     col3.metric("Early Warnings (48h Lead)", warning_count, delta=f"{warning_count} Caught", delta_color="normal")
     col4.metric("Critical Degradations", critical_count, delta=f"{critical_count} Interventions Needed", delta_color="inverse")
-    col5.metric("Est. SLA Penalties Saved", f"£{penalties_saved:,.0f}", delta="Risk Mitigated", delta_color="normal")
+    col5.metric("Est. SLA Penalties Saved", f"£{penalties_saved:,.0f}", delta=f"{critical_count} Outages Avoided", delta_color="normal")
 
     st.markdown("---")
 
@@ -76,7 +93,8 @@ try:
             return 'background-color: #ffa500; color: black; font-weight: bold;'
         return 'background-color: #0e1117; color: #00ff7f;'
 
-    display_cols = ['interface', 'health_status', 'max_laser_bias', 'max_ber', 'min_anomaly_score', 'last_timestamp']
+    # Reordered columns: device_id first, degraded_at replacing last_timestamp
+    display_cols = ['device_id', 'interface', 'health_status', 'max_laser_bias', 'max_ber', 'min_anomaly_score', 'degraded_at']
     styled_table = summary_df[display_cols].style.map(style_status, subset=['health_status'])
     st.dataframe(styled_table, use_container_width=True)
 

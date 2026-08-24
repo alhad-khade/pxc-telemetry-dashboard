@@ -27,13 +27,13 @@ def load_s3_data():
 try:
     df = load_s3_data()
 
-    # Sidebar Filter: Active vs. Historical View
+    # Sidebar Filter: Active Alerts vs Historical Window
     st.sidebar.header("Dashboard Configuration")
     view_mode = st.sidebar.radio(
         "Evaluation Perspective:",
         ["Active Alerts (Current State)", "Historical Lifetime Max (35-Day Window)"],
         index=0,
-        help="Active Mode uses the latest telemetry point. Historical Mode maps the worst state over the entire dataset."
+        help="Active Mode evaluates the latest telemetry state. Historical Mode maps the peak severity over 35 days."
     )
 
     # 1. Severity mapping
@@ -44,12 +44,12 @@ try:
     }
     df['severity'] = df['health_status'].map(status_severity)
 
-    # Compute aggregation records per interface
+    # Aggregation per interface
     summary_records = []
     for (device_id, iface), group in df.groupby(['device_id', 'interface']):
         group = group.sort_values('timestamp')
         
-        # Latest point for active evaluation
+        # Latest telemetry point for active evaluation
         latest_row = group.iloc[-1]
         current_sev = latest_row['severity']
         
@@ -58,10 +58,10 @@ try:
         max_bias = group['laser_bias_ma'].max()
         max_ber = group['pre_fec_ber'].max()
         
-        # Select target severity depending on active view mode toggle
+        # Select target severity depending on perspective selection
         evaluated_sev = current_sev if "Active Alerts" in view_mode else max_sev
         
-        # Calculate early detection timestamps & lead time (in days)
+        # Calculate early detection timestamps & lead time
         if max_sev > 1:
             first_warning_row = group[group['severity'] >= 2]
             first_detected_at = first_warning_row['timestamp'].min()
@@ -69,15 +69,18 @@ try:
             critical_row = group[group['severity'] == 3]
             if not critical_row.empty:
                 degraded_at = critical_row['timestamp'].min()
-                lead_time_td = degraded_at - first_detected_at
-                days_val = round(lead_time_td.total_seconds() / 86400, 1)
-                advance_notice = f"{days_val} days"
             else:
-                degraded_at = first_detected_at
-                latest_ts = group['timestamp'].max()
-                lead_time_td = latest_ts - first_detected_at
-                days_val = round(lead_time_td.total_seconds() / 86400, 1)
-                advance_notice = f">{days_val} days"
+                degraded_at = group['timestamp'].max()
+
+            lead_time_td = degraded_at - first_detected_at
+            days_val = round(lead_time_td.total_seconds() / 86400, 1)
+            
+            # Format lead time clearly (Hours if < 1 day, Days if >= 1 day)
+            if days_val < 1.0:
+                hours_val = round(lead_time_td.total_seconds() / 3600, 1)
+                advance_notice = f"{hours_val} hrs"
+            else:
+                advance_notice = f"{days_val} days"
         else:
             first_detected_at = pd.NaT
             degraded_at = group['timestamp'].max()
@@ -100,19 +103,18 @@ try:
     severity_map = {3: 'CRITICAL_DEGRADATION', 2: 'WARNING_DEGRADATION', 1: 'HEALTHY'}
     summary_df['health_status'] = summary_df['evaluated_severity'].map(severity_map)
 
-    # Sort summary to bring degraded interfaces to the top for executive review
+    # Sort summary to surface degraded interfaces first
     summary_df = summary_df.sort_values(by=['evaluated_severity', 'device_id'], ascending=[False, True])
 
-    # Calculate KPI Card Totals
+    # Executive Metric KPIs
     total_interfaces = len(summary_df)
     warning_count = len(summary_df[summary_df['health_status'] == 'WARNING_DEGRADATION'])
     critical_count = len(summary_df[summary_df['health_status'] == 'CRITICAL_DEGRADATION'])
     healthy_count = len(summary_df[summary_df['health_status'] == 'HEALTHY'])
     
-    # Financial KPI: £15,000 SLA penalty avoided per critical optic outage
+    # Financial KPI (£15,000 per critical optic failure avoided)
     penalties_saved = critical_count * 15000
 
-    # Render Executive KPI Metrics (5 Columns)
     col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Monitored Interfaces", total_interfaces)
     col2.metric("Healthy Interfaces", healthy_count)
@@ -122,7 +124,7 @@ try:
 
     st.markdown("---")
 
-    # 2. Interface Health Summary Table
+    # 2. Interface Summary Table
     st.subheader(f"📋 Optics Health Summary ({view_mode})")
     
     def style_status(val):
@@ -148,22 +150,21 @@ try:
 
     st.markdown("---")
 
-    # 3. Deep-Dive Historical Telemetry Analysis with Cascading Dropdowns
+    # 3. Cascading Inspection Dropdowns (Device ID -> Interface)
     st.subheader("🔍 Historical Telemetry & Anomaly Score Inspection")
     
     col_dev, col_iface = st.columns(2)
     
     with col_dev:
-        # Select Device ID
         device_list = sorted(df['device_id'].unique())
         selected_device = st.selectbox("1. Select Device ID:", device_list)
 
     with col_iface:
-        # Dynamic interface list filtered by the chosen Device ID
+        # Dynamically filter available interfaces based on selected Device ID
         available_ifaces = sorted(df[df['device_id'] == selected_device]['interface'].unique())
         selected_iface = st.selectbox("2. Select Interface:", available_ifaces)
 
-    # Filter data for selected Device + Interface combination
+    # Filter chart data for selected Device + Interface
     iface_df = df[(df['device_id'] == selected_device) & (df['interface'] == selected_iface)].sort_values('timestamp')
 
     col_left, col_right = st.columns(2)

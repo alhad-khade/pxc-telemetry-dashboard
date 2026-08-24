@@ -5,10 +5,10 @@ import boto3
 st.set_page_config(page_title="PXC Optic Failure Engine", layout="wide")
 
 st.title("PXC Communications: Predictive Transceiver Failure Engine")
-st.markdown("Real-time telemetry anomaly detection for core and CPE optical interfaces.")
+st.markdown("Unsupervised AIOps model monitoring digital optical metrics across core Juniper interfaces.")
 
-# Read S3 using Streamlit Cloud Secrets
-@st.cache_data(ttl=300) # Refreshes data every 5 minutes
+# Read S3 Gold layer using Streamlit Cloud Secrets
+@st.cache_data(ttl=300)
 def load_s3_data():
     s3 = boto3.client(
         's3',
@@ -20,33 +20,61 @@ def load_s3_data():
     key = 'gold/sfp_anomaly_output.csv'
     
     obj = s3.get_object(Bucket=bucket_name, Key=key)
-    return pd.read_csv(obj['Body'])
+    df = pd.read_csv(obj['Body'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    return df
 
 try:
     df = load_s3_data()
 
-    # Executive Summary Metrics
-    col1, col2, col3 = st.columns(3)
-    total_monitored = len(df['interface'].unique())
-    failing_count = len(df[df['health_status'] == 'CRITICAL_DEGRADATION']['interface'].unique())
+    # 1. Executive Summary Metrics (Latest state per interface)
+    latest_df = df.sort_values('timestamp').groupby('interface').last().reset_index()
     
-    col1.metric("Interfaces Monitored", total_monitored)
-    col2.metric("Critical Degradation Alerts", failing_count, delta="-1 Action Required")
-    col3.metric("Estimated SLA Penalties Avoided", f"£{failing_count * 15000:,.0f}")
+    total_interfaces = len(latest_df)
+    warning_count = len(latest_df[latest_df['health_status'] == 'WARNING_DEGRADATION'])
+    critical_count = len(latest_df[latest_df['health_status'] == 'CRITICAL_DEGRADATION'])
+    healthy_count = total_interfaces - (warning_count + critical_count)
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Monitored Interfaces", total_interfaces)
+    col2.metric("Healthy Interfaces", healthy_count)
+    col3.metric("Early Warnings (48h Lead)", warning_count, delta="Action Required", delta_color="normal")
+    col4.metric("Critical Alerts", critical_count, delta="Immediate Swap Required", delta_color="inverse")
 
     st.markdown("---")
 
-    # Critical Alerts Table
-    st.subheader("⚠️ Interfaces Requiring Proactive Replacement")
-    critical_df = df[df['health_status'] == 'CRITICAL_DEGRADATION']
-    st.dataframe(
-        critical_df[['timestamp', 'device_id', 'interface', 'laser_bias_ma', 'pre_fec_ber', 'health_status']], 
-        use_container_width=True
-    )
+    # 2. Interface Health Summary Table
+    st.subheader("📋 Current Optics Operational Summary")
+    
+    # Highlight status colors
+    def style_status(val):
+        if val == 'CRITICAL_DEGRADATION':
+            return 'background-color: #ff4b4b; color: white; font-weight: bold;'
+        elif val == 'WARNING_DEGRADATION':
+            return 'background-color: #ffa500; color: black; font-weight: bold;'
+        return 'background-color: #0e1117; color: #00ff7f;'
 
-    # Telemetry Visualizations
-    st.subheader("📈 Laser Bias Current (mA) - Degradation Signal")
-    st.line_chart(df.pivot(index='timestamp', columns='interface', values='laser_bias_ma'))
+    display_cols = ['interface', 'health_status', 'laser_bias_ma', 'pre_fec_ber', 'temperature_c', 'anomaly_score', 'timestamp']
+    styled_table = latest_df[display_cols].style.applymap(style_status, subset=['health_status'])
+    st.dataframe(styled_table, use_container_width=True)
+
+    st.markdown("---")
+
+    # 3. Deep-Dive Historical Telemetry Analysis
+    st.subheader("🔍 Historical Telemetry & Anomaly Score Inspection")
+    
+    selected_iface = st.selectbox("Select Interface to Analyze:", sorted(df['interface'].unique()))
+    iface_df = df[df['interface'] == selected_iface].sort_values('timestamp')
+
+    col_left, col_right = st.columns(2)
+
+    with col_left:
+        st.markdown(f"**Laser Bias Current (mA) — {selected_iface}**")
+        st.line_chart(iface_df.set_index('timestamp')['laser_bias_ma'])
+
+    with col_right:
+        st.markdown(f"**Isolation Forest Anomaly Score — {selected_iface}**")
+        st.line_chart(iface_df.set_index('timestamp')['anomaly_score'])
 
 except Exception as e:
     st.error(f"Unable to load data from AWS S3: {e}")

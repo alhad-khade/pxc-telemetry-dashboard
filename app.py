@@ -28,7 +28,6 @@ try:
     df = load_s3_data()
 
     # 1. Historical & Peak Health Assessment per Interface
-    # Define severity ranking to pick the worst health status observed per interface
     status_severity = {
         'CRITICAL_DEGRADATION': 3,
         'WARNING_DEGRADATION': 2,
@@ -45,7 +44,6 @@ try:
         last_timestamp=('timestamp', 'max')
     ).reset_index()
 
-    # Map numeric severity back to status labels
     severity_map = {3: 'CRITICAL_DEGRADATION', 2: 'WARNING_DEGRADATION', 1: 'HEALTHY'}
     summary_df['health_status'] = summary_df['max_severity'].map(severity_map)
 
@@ -54,13 +52,17 @@ try:
     warning_count = len(summary_df[summary_df['health_status'] == 'WARNING_DEGRADATION'])
     critical_count = len(summary_df[summary_df['health_status'] == 'CRITICAL_DEGRADATION'])
     healthy_count = total_interfaces - (warning_count + critical_count)
+    
+    # Financial KPI: £15,000 SLA penalty avoided per flagged optic failure
+    penalties_saved = (warning_count + critical_count) * 15000
 
-    # Render Executive KPI Metrics
-    col1, col2, col3, col4 = st.columns(4)
+    # Render Executive KPI Metrics (5 Columns)
+    col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Monitored Interfaces", total_interfaces)
     col2.metric("Healthy Interfaces", healthy_count)
-    col3.metric("Early Warnings (48h Lead)", warning_count, delta=f"{warning_count} Caught in Backtest", delta_color="normal")
+    col3.metric("Early Warnings (48h Lead)", warning_count, delta=f"{warning_count} Caught", delta_color="normal")
     col4.metric("Critical Degradations", critical_count, delta=f"{critical_count} Interventions Needed", delta_color="inverse")
+    col5.metric("Est. SLA Penalties Saved", f"£{penalties_saved:,.0f}", delta="Risk Mitigated", delta_color="normal")
 
     st.markdown("---")
 

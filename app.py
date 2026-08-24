@@ -27,6 +27,15 @@ def load_s3_data():
 try:
     df = load_s3_data()
 
+    # Sidebar Filter: Active vs. Historical View
+    st.sidebar.header("Dashboard Configuration")
+    view_mode = st.sidebar.radio(
+        "Evaluation Perspective:",
+        ["Active Alerts (Current State)", "Historical Lifetime Max (35-Day Window)"],
+        index=0,
+        help="Active Mode uses the latest telemetry point. Historical Mode maps the worst state over the entire dataset."
+    )
+
     # 1. Severity mapping
     status_severity = {
         'CRITICAL_DEGRADATION': 3,
@@ -35,22 +44,28 @@ try:
     }
     df['severity'] = df['health_status'].map(status_severity)
 
-    # Calculate worst state, anomaly score, degradation times, and lead time (in days)
+    # Compute aggregation records per interface
     summary_records = []
     for (device_id, iface), group in df.groupby(['device_id', 'interface']):
         group = group.sort_values('timestamp')
+        
+        # Latest point for active evaluation
+        latest_row = group.iloc[-1]
+        current_sev = latest_row['severity']
+        
         max_sev = group['severity'].max()
         min_score = group['anomaly_score'].min()
         max_bias = group['laser_bias_ma'].max()
         max_ber = group['pre_fec_ber'].max()
         
-        # Calculate early detection timestamps & lead time in days
+        # Select target severity depending on active view mode toggle
+        evaluated_sev = current_sev if "Active Alerts" in view_mode else max_sev
+        
+        # Calculate early detection timestamps & lead time (in days)
         if max_sev > 1:
-            # Timestamp when early warning was first flagged
             first_warning_row = group[group['severity'] >= 2]
             first_detected_at = first_warning_row['timestamp'].min()
             
-            # Timestamp when critical degradation occurred (if applicable)
             critical_row = group[group['severity'] == 3]
             if not critical_row.empty:
                 degraded_at = critical_row['timestamp'].min()
@@ -71,6 +86,7 @@ try:
         summary_records.append({
             'device_id': device_id,
             'interface': iface,
+            'evaluated_severity': evaluated_sev,
             'max_severity': max_sev,
             'max_laser_bias': max_bias,
             'max_ber': max_ber,
@@ -82,10 +98,10 @@ try:
 
     summary_df = pd.DataFrame(summary_records)
     severity_map = {3: 'CRITICAL_DEGRADATION', 2: 'WARNING_DEGRADATION', 1: 'HEALTHY'}
-    summary_df['health_status'] = summary_df['max_severity'].map(severity_map)
+    summary_df['health_status'] = summary_df['evaluated_severity'].map(severity_map)
 
     # Sort summary to bring degraded interfaces to the top for executive review
-    summary_df = summary_df.sort_values(by=['max_severity', 'device_id'], ascending=[False, True])
+    summary_df = summary_df.sort_values(by=['evaluated_severity', 'device_id'], ascending=[False, True])
 
     # Calculate KPI Card Totals
     total_interfaces = len(summary_df)
@@ -107,7 +123,7 @@ try:
     st.markdown("---")
 
     # 2. Interface Health Summary Table
-    st.subheader("📋 Optics Health & Backtest Summary (35-Day Window)")
+    st.subheader(f"📋 Optics Health Summary ({view_mode})")
     
     def style_status(val):
         if val == 'CRITICAL_DEGRADATION':
@@ -116,7 +132,6 @@ try:
             return 'background-color: #ffa500; color: black; font-weight: bold;'
         return 'background-color: #0e1117; color: #00ff7f;'
 
-    # Display columns with lead time in days
     display_cols = [
         'device_id', 
         'interface', 
@@ -133,20 +148,32 @@ try:
 
     st.markdown("---")
 
-    # 3. Deep-Dive Historical Telemetry Analysis
+    # 3. Deep-Dive Historical Telemetry Analysis with Cascading Dropdowns
     st.subheader("🔍 Historical Telemetry & Anomaly Score Inspection")
     
-    selected_iface = st.selectbox("Select Interface to Analyze:", sorted(df['interface'].unique()))
-    iface_df = df[df['interface'] == selected_iface].sort_values('timestamp')
+    col_dev, col_iface = st.columns(2)
+    
+    with col_dev:
+        # Select Device ID
+        device_list = sorted(df['device_id'].unique())
+        selected_device = st.selectbox("1. Select Device ID:", device_list)
+
+    with col_iface:
+        # Dynamic interface list filtered by the chosen Device ID
+        available_ifaces = sorted(df[df['device_id'] == selected_device]['interface'].unique())
+        selected_iface = st.selectbox("2. Select Interface:", available_ifaces)
+
+    # Filter data for selected Device + Interface combination
+    iface_df = df[(df['device_id'] == selected_device) & (df['interface'] == selected_iface)].sort_values('timestamp')
 
     col_left, col_right = st.columns(2)
 
     with col_left:
-        st.markdown(f"**Laser Bias Current (mA) — {selected_iface}**")
+        st.markdown(f"**Laser Bias Current (mA) — {selected_device} [{selected_iface}]**")
         st.line_chart(iface_df.set_index('timestamp')['laser_bias_ma'])
 
     with col_right:
-        st.markdown(f"**Isolation Forest Anomaly Score — {selected_iface}**")
+        st.markdown(f"**Isolation Forest Anomaly Score — {selected_device} [{selected_iface}]**")
         st.line_chart(iface_df.set_index('timestamp')['anomaly_score'])
 
 except Exception as e:

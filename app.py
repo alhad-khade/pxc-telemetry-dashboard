@@ -27,26 +27,46 @@ def load_s3_data():
 try:
     df = load_s3_data()
 
-    # 1. Executive Summary Metrics (Latest state per interface)
-    latest_df = df.sort_values('timestamp').groupby('interface').last().reset_index()
-    
-    total_interfaces = len(latest_df)
-    warning_count = len(latest_df[latest_df['health_status'] == 'WARNING_DEGRADATION'])
-    critical_count = len(latest_df[latest_df['health_status'] == 'CRITICAL_DEGRADATION'])
+    # 1. Historical & Peak Health Assessment per Interface
+    # Define severity ranking to pick the worst health status observed per interface
+    status_severity = {
+        'CRITICAL_DEGRADATION': 3,
+        'WARNING_DEGRADATION': 2,
+        'HEALTHY': 1
+    }
+    df['severity'] = df['health_status'].map(status_severity)
+
+    # Group by interface to capture worst observed state & min anomaly score
+    summary_df = df.groupby('interface').agg(
+        max_severity=('severity', 'max'),
+        min_anomaly_score=('anomaly_score', 'min'),
+        max_laser_bias=('laser_bias_ma', 'max'),
+        max_ber=('pre_fec_ber', 'max'),
+        last_timestamp=('timestamp', 'max')
+    ).reset_index()
+
+    # Map numeric severity back to status labels
+    severity_map = {3: 'CRITICAL_DEGRADATION', 2: 'WARNING_DEGRADATION', 1: 'HEALTHY'}
+    summary_df['health_status'] = summary_df['max_severity'].map(severity_map)
+
+    # Calculate KPI Card Totals
+    total_interfaces = len(summary_df)
+    warning_count = len(summary_df[summary_df['health_status'] == 'WARNING_DEGRADATION'])
+    critical_count = len(summary_df[summary_df['health_status'] == 'CRITICAL_DEGRADATION'])
     healthy_count = total_interfaces - (warning_count + critical_count)
 
+    # Render Executive KPI Metrics
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Monitored Interfaces", total_interfaces)
     col2.metric("Healthy Interfaces", healthy_count)
-    col3.metric("Early Warnings (48h Lead)", warning_count, delta="Action Required", delta_color="normal")
-    col4.metric("Critical Alerts", critical_count, delta="Immediate Swap Required", delta_color="inverse")
+    col3.metric("Early Warnings (48h Lead)", warning_count, delta=f"{warning_count} Caught in Backtest", delta_color="normal")
+    col4.metric("Critical Degradations", critical_count, delta=f"{critical_count} Interventions Needed", delta_color="inverse")
 
     st.markdown("---")
 
     # 2. Interface Health Summary Table
-    st.subheader("📋 Current Optics Operational Summary")
+    st.subheader("📋 Optics Health & Backtest Summary (35-Day Window)")
     
-    # Highlight status colors
     def style_status(val):
         if val == 'CRITICAL_DEGRADATION':
             return 'background-color: #ff4b4b; color: white; font-weight: bold;'
@@ -54,8 +74,8 @@ try:
             return 'background-color: #ffa500; color: black; font-weight: bold;'
         return 'background-color: #0e1117; color: #00ff7f;'
 
-    display_cols = ['interface', 'health_status', 'laser_bias_ma', 'pre_fec_ber', 'temperature_c', 'anomaly_score', 'timestamp']
-    styled_table = latest_df[display_cols].style.map(style_status, subset=['health_status'])
+    display_cols = ['interface', 'health_status', 'max_laser_bias', 'max_ber', 'min_anomaly_score', 'last_timestamp']
+    styled_table = summary_df[display_cols].style.map(style_status, subset=['health_status'])
     st.dataframe(styled_table, use_container_width=True)
 
     st.markdown("---")

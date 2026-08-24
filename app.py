@@ -27,7 +27,7 @@ def load_s3_data():
 try:
     df = load_s3_data()
 
-    # 1. Historical & Peak Health Assessment per Interface
+    # 1. Severity mapping
     status_severity = {
         'CRITICAL_DEGRADATION': 3,
         'WARNING_DEGRADATION': 2,
@@ -35,21 +35,37 @@ try:
     }
     df['severity'] = df['health_status'].map(status_severity)
 
-    # Calculate worst state, minimum anomaly score, and exact degradation time
+    # Calculate worst state, anomaly score, degradation times, and lead time
     summary_records = []
     for (device_id, iface), group in df.groupby(['device_id', 'interface']):
+        group = group.sort_values('timestamp')
         max_sev = group['severity'].max()
         min_score = group['anomaly_score'].min()
         max_bias = group['laser_bias_ma'].max()
         max_ber = group['pre_fec_ber'].max()
         
-        # Capture the timestamp when the peak degraded health status was first observed
+        # Calculate early detection timestamps & lead time
         if max_sev > 1:
-            degraded_rows = group[group['severity'] == max_sev]
-            degraded_at = degraded_rows['timestamp'].min()
-        else:
-            degraded_at = group['timestamp'].max()
+            # Timestamp when early warning was first flagged
+            first_warning_row = group[group['severity'] >= 2]
+            first_detected_at = first_warning_row['timestamp'].min()
             
+            # Timestamp when critical degradation occurred (if applicable)
+            critical_row = group[group['severity'] == 3]
+            if not critical_row.empty:
+                degraded_at = critical_row['timestamp'].min()
+                lead_time_td = degraded_at - first_detected_at
+                lead_time_hrs = f"{round(lead_time_td.total_seconds() / 3600, 1)} hrs"
+            else:
+                degraded_at = first_detected_at
+                latest_ts = group['timestamp'].max()
+                lead_time_td = latest_ts - first_detected_at
+                lead_time_hrs = f">{round(lead_time_td.total_seconds() / 3600, 1)} hrs"
+        else:
+            first_detected_at = pd.NaT
+            degraded_at = group['timestamp'].max()
+            lead_time_hrs = "N/A (Healthy)"
+
         summary_records.append({
             'device_id': device_id,
             'interface': iface,
@@ -57,18 +73,23 @@ try:
             'max_laser_bias': max_bias,
             'max_ber': max_ber,
             'min_anomaly_score': min_score,
-            'degraded_at': degraded_at
+            'first_detected_at': first_detected_at,
+            'degraded_at': degraded_at,
+            'advance_notice_hrs': lead_time_hrs
         })
 
     summary_df = pd.DataFrame(summary_records)
     severity_map = {3: 'CRITICAL_DEGRADATION', 2: 'WARNING_DEGRADATION', 1: 'HEALTHY'}
     summary_df['health_status'] = summary_df['max_severity'].map(severity_map)
 
+    # Sort summary to bring degraded interfaces to the top for executive review
+    summary_df = summary_df.sort_values(by=['max_severity', 'device_id'], ascending=[False, True])
+
     # Calculate KPI Card Totals
     total_interfaces = len(summary_df)
     warning_count = len(summary_df[summary_df['health_status'] == 'WARNING_DEGRADATION'])
     critical_count = len(summary_df[summary_df['health_status'] == 'CRITICAL_DEGRADATION'])
-    healthy_count = total_interfaces - (warning_count + critical_count)
+    healthy_count = len(summary_df[summary_df['health_status'] == 'HEALTHY'])
     
     # Financial KPI: £15,000 SLA penalty avoided per critical optic outage
     penalties_saved = critical_count * 15000
@@ -77,8 +98,8 @@ try:
     col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Monitored Interfaces", total_interfaces)
     col2.metric("Healthy Interfaces", healthy_count)
-    col3.metric("Early Warnings (48h Lead)", warning_count, delta=f"{warning_count} Caught", delta_color="normal")
-    col4.metric("Critical Degradations", critical_count, delta=f"{critical_count} Interventions Needed", delta_color="inverse")
+    col3.metric("Early Warnings", warning_count, delta=f"{warning_count} Actionable", delta_color="normal")
+    col4.metric("Critical Degradations", critical_count, delta=f"{critical_count} Interventions", delta_color="inverse")
     col5.metric("Est. SLA Penalties Saved", f"£{penalties_saved:,.0f}", delta=f"{critical_count} Outages Avoided", delta_color="normal")
 
     st.markdown("---")
@@ -93,8 +114,18 @@ try:
             return 'background-color: #ffa500; color: black; font-weight: bold;'
         return 'background-color: #0e1117; color: #00ff7f;'
 
-    # Reordered columns: device_id first, degraded_at replacing last_timestamp
-    display_cols = ['device_id', 'interface', 'health_status', 'max_laser_bias', 'max_ber', 'min_anomaly_score', 'degraded_at']
+    # Leading device_id + early detection lead time metrics
+    display_cols = [
+        'device_id', 
+        'interface', 
+        'health_status', 
+        'advance_notice_hrs',
+        'first_detected_at',
+        'max_laser_bias', 
+        'max_ber', 
+        'min_anomaly_score'
+    ]
+    
     styled_table = summary_df[display_cols].style.map(style_status, subset=['health_status'])
     st.dataframe(styled_table, use_container_width=True)
 
